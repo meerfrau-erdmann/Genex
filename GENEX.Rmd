@@ -1,0 +1,376 @@
+---
+title: "GENEX"
+author: "Sandra Erdmann"
+date: "15 April 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Genex project {.tabset}
+
+## Introduction
+
+I have one dependent or response variable (y), which is my gene expression and continuous. Then I have 2 explainatory or independent (x) variables or predictors (CO2 and Nutrients) in 4 treatments, which are categorical. These are described in the variable "sample" 380, 380+, 1000 and 1000+ or treatment A, B, C and D with Low and High for both factors CO2 and nutrients. So, I have combinatory effects of CO2 (2 factors) and nutrient levels (2 factors) on the expression rate.
+
+In this case I have a mixed model effect and need to run a **two-way ANOVA**
+
+Random intercept models allow to have a different interceps of each group.A different intercept and slope per group is a random intercept, random slope model (more complex), needs enough data
+
+This are the assumptions to test?:
+
+    1) Individuals are independent.
+    2) Variance is homogeneous (seen in a boxplot; compute Levene's test).
+    3) Residuals follow a normal distribution (alternative non-parametric tests)?
+    4) At least 20 individuals (recommended), which I don't have!
+
+NEW Approaches:
+
+    - better use a boxplot rather than a histogram, when small sample size
+    - nonparametric test, such as Fisher's Exact test (for small sample sizes), IF data is truely non normal
+    - compute an ANOVA for control vs. HCO2 + control vs. HNUT; HCO2 * HNUT
+    - apply point-biserial correlation coefficient and phi
+    - and non parametric fisher's exact test with your small data set. p.196
+    
+Questions:
+
+      - Does poisson assume normality? Then better use nlme, which doesn't?
+
+## Load libraries
+
+```{r load libraries}
+library(broom)
+library(car)
+library(coda)
+library(effects)
+library(emmeans)
+library(ggplot2)
+library(ggfortify)
+library(glmmTMB) # to fit a glmmTMB
+library(lme4) #to fit a lme and lmer
+library(mgcv) # for the function GAM
+library(MASS)
+library(mixtools) # to analyse bimodal distribution
+library(MuMIn)
+library(splines) # for using splines
+library(vegan)
+library(tidybayes)
+library(tidyverse)
+```
+
+## Data arrangement
+
+### Load dataset
+
+```{r load Gene expression dataset Gex}
+Genex<-read.csv('C:/Users/admin/Desktop/Paper CA/Gex/Genex.csv', strip.white=T)
+Genex
+```
+
+### Explore dataset
+
+```{r}
+str(Genex)
+```
+
+```{r}
+summary(Genex)
+```
+
+## Sort dataset
+
+Drop rows in the column "Sample" that do not contain a treatment. The samples, that don't contain a treatment, are the ones that have the standard included. But I don't want to check on the standard, so I drop this.
+
+```{r arrange Gex1 by Content}
+arrange(Genex, Treat) 
+```
+
+Drop Samples with no treatment aligned
+
+```{r drop Samples with no treatment aligned}
+Genex1<-filter(Genex, Treat %in% c('380','380+','1000','1000+')) %>% droplevels()
+Genex1
+```
+
+**Note: Genex includes the standard, while Genex1 does not contain the standard**
+    
+    
+## Descriptive Statistics    
+
+Visualize the dataset
+
+### Gene expression by treatment
+
+```{r}
+ggplot(Genex1, aes(x=Treat, y=Exp, group=Treat, color=Treat)) +
+  geom_point(aes(x=Treat,y=Exp, colour=Treat)) +
+       ggtitle("Gene expression of a carbonic anhydrase by treatment") +
+    scale_y_continuous(name="Expression rate") 
+```
+
+```{r plot Ex against content by treatment of Genex1}
+ggplot(Genex1, aes(y=Exp, x=Treat, group=Treat, color=Treat)) +
+  geom_point()+
+       ggtitle("Gene expression of a carbonic anhydrase per treatment") +
+    scale_y_continuous(name="Expression rate") +
+  geom_smooth(method='lm', se=FALSE) +
+  facet_wrap(~Treat)
+```
+
+### Impact of CO2
+
+```{r}
+ggplot(Genex1, aes(y=Exp, x=CO2)) +
+        geom_point()
+```
+
+### Impact of Nut
+
+```{r}
+ggplot(Genex1, aes(y=Exp, x=NUT, colour=CO2)) +
+        geom_point()
+```
+
+### Mean, variance and SD
+
+What is the mean, variance and SD **of entire dataset**?
+
+```{r}
+summary(Genex1)
+summarise(Genex1, Mean=mean(Exp), Variance=var(Exp), SD=sd(Exp))
+```
+
+What is the **mean** of each treatment?
+
+```{r}
+tapply(Genex1$Exp, INDEX=Genex1$Treat, FUN=mean)
+```
+
+What is the **variance** of each treatment?
+
+```{r}
+tapply(Genex1$Exp, INDEX=Genex1$Treat, FUN=var)
+```
+
+What is the **standard deviation** of each treatment?
+
+```{r}
+tapply(Genex1$Exp, INDEX=Genex1$Treat, FUN=sd)
+```
+
+
+## Assumption 1
+
+### Individuals are independent:
+
+How? By **centering** predictors, the interaction is independent. Use function center.
+
+## Assumption 2
+
+### Variance is homogeneous
+
+**Homogeneity** is checked by validating a **boxplot**.
+
+```{r boxplot of Genex1}
+ggplot(Genex1, aes(x=Treat, y=Exp, group=Treat, color=Treat)) +
+  geom_boxplot() +
+    ggtitle("Boxplot of the expression rate per treatment") +
+    scale_y_continuous(name="Expression rate")
+```
+
+Result: The mean is not always in the middle. I have homogeneity since there is no relation between the mean and the variance visible in the boxplot. When the mean is greater, the variance is not equally getting bigger.
+
+```{r boxplot of Genex1 CO2}
+ggplot(Genex1, aes(x=CO2, y=Exp, fill=NUT)) +
+  geom_boxplot() +
+    ggtitle("Boxplot of the expression rate against CO2 and NUT") +
+    scale_y_continuous(name="Expression rate")
+```
+
+```{r boxplot of Genex1 NUT}
+ggplot(Genex1, aes(x=NUT, y=Exp, fill=CO2)) +
+  geom_boxplot() +
+    ggtitle("Boxplot of the expression rate against CO2 and NUT") +
+    scale_y_continuous(name="Expression rate")
+```
+
+## Assumption 3
+
+### Residuals follow a normal distribution
+
+The distribution of Y and their residuals within each group should be normally distributed
+
+So in ANOVA, you actually have two options for testing normality.  If there really are many values of Y for each value of X (each group), and there really are only a few groups (say, four or fewer), go ahead and check normality separately for each group.
+
+But if you have many groups (a 2x2x3 ANOVA has 12 groups) or if there are **few observations per group** (it’s hard to check normality on only 20 data points), it’s often easier to **just use the residuals** and check them all together.
+
+If you have a continuous covariate in the model as well, you’ve just lost option one, and residuals are the only way to go.
+
+All GLM procedures have an option to save residuals. Once you do, run the same QQ plots to check normality as you would in regression.
+
+
+#### Via graphs
+
+```{r}
+ggplot(Genex1, aes(x = Exp)) +
+  geom_histogram(aes(color = Treat, fill = Treat, bins = 40))
+```
+
+Create vectors for each treatment
+
+T1 = 380
+
+```{r create vector for treatment 1}
+T1<-filter(Genex1, Treat %in% ('380')) %>% droplevels()
+T1
+```
+
+T2 = 380+
+
+```{r create vector for treatment 2}
+T2<-filter(Genex1, Treat %in% ('380+')) %>% droplevels()
+T2
+```
+
+T3 = 1000
+
+```{r create vector for treatment 3}
+T3<-filter(Genex1, Treat %in% ('1000')) %>% droplevels()
+T3
+```
+
+T4 = 1000+
+
+```{r create vector for treatment 4}
+T4<-filter(Genex1, Treat %in% ('1000+')) %>% droplevels()
+T4
+```
+
+#### Via tests
+
+Is my data normally distributed? Test this with a **Shapiro-Wilk test**
+
+```{r}
+shapiro.test(Genex1$Exp)
+```
+
+Result: If the chosen alpha level is 0.05 and the p-value is less than 0.05, then the null hypothesis that the data are normally distributed is rejected. So, the data are **not normally distributed**.
+
+Confirm with the **Anderson-Darling test**
+
+```{r}
+library(nortest)
+ad.test(Genex1$Exp)
+```
+
+Result: If the chosen alpha level is 0.05 and the p-value is less than 0.05, then the null hypothesis that the data are normally distributed is rejected. So, the data are **not normally distributed**.
+
+### Do test within treatments! # by treatment
+
+## Inferential Statistics 
+
+### Which model to fit?
+
+With two factors inpacting a numerical response, I will do a **mixed effects model**, in which I also want to explore the combined effect of co2 and nut.
+
+With the other dataset I aim to do a **multiple regression model** as a multiplicative model, since I also want to explore the combined effect of co2 and nut.
+
+### Mixed effects model
+
+#### I DONT HAVE RANDOM EFFECTS!!!!!!!!
+
+```{r}
+library(nlme)
+# fit that model; you have a formula for the fixed effects and a formula for the random effects
+# the first one is always fixed that's why we don't write
+# and neither number, becuase it assumes it is the same than fixed number
+# lme only does gaussian
+# ~ means do something different per leaf, 1 means intercept is 1
+# random~1 means that the LEAF has a different intercept for that group, which gets allowed by the model
+# method=reml residaual maximum likelihood is biased in the presence of random effects
+# when you use this maximum likelihood when you use mixed effects model
+Genex.lme<-lme(Exp~, random=~1|LEAF, data=Genex1, method='REML')
+```
+
+
+### 2-factorial ANOVA
+
+(1) Fit model
+
+**Gaussian**
+
+```{r fit lm model1}
+Genex1.glm<-glm(Exp~CO2*NUT, data=Genex1, family=gaussian)
+```
+
+```{r}
+summary(Genex1.glm)
+```
+
+Check on **coefficients** of the linear model:
+
+```{r coefficients}
+coef(Genex1.glm)
+```
+Check on **residuals** of the linear model:
+
+```{r residuals}
+r<-residuals(Genex1.glm)
+r
+```
+
+```{r validate lm model1}
+autoplot(Genex1.glm, which=1:6, ncol=2, label.size=3)
+```
+Result:
+
+    Residuals ok; we can ignore stripy pattern, since this reflects the factorial design
+    Normal QQ has tails? If so, my data is not normally distributed? log transform
+    Cook's D is acceptabel, since less than 0.8
+
+**Goodness of fit test**
+
+```{r goodness of fit Genex1}
+Genex1.resid=sum(resid(Genex1.glm, type='pearson')^2)
+1-pchisq(Genex1.resid, df=Genex1.glm$df.residual)
+# small p-value, so there is evidence of lack of fit
+```
+Result: lack of fit
+
+**Overdispersion**?
+
+```{r}
+Genex1.resid/Genex1.glm$df.residual
+```
+Result: The result isn't close to 1; it has more variability that we expect. The cut-off is 3 for overdispersion -> **overdispersed model**.
+
+**Log-Transformation**
+
+```{r fit lm model2}
+Genex2.glm<-glm(log(Exp)~CO2*NUT, data=Genex1, family=gaussian)
+```
+
+```{r validate lm model2}
+autoplot(Genex2.glm, which=1:6, ncol=2, label.size=3)
+```
+
+```{r}
+AICc(Genex1.glm, Genex2.glm)
+```
+
+Result: How can I get a negative AIC???
+
+```{r}
+Genex2.resid<-sum(resid(Genex2.glm, type="pearson")^2)
+1-pchisq(Genex2.resid, Genex2.glm$df.resid)
+```
+
+```{r}
+anova(Genex1.glm)
+```
+
+
+### Multiple regression model

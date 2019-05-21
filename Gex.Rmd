@@ -1,0 +1,1496 @@
+---
+title: "Gex"
+author: "Sandra Erdmann"
+date: "4 October 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+CHECK ON THE 23082018 ANCOVA FOR MIXED EFFECTS MODELS LINE 442
+
+
+# Gene expression project Gex {.tabset}
+
+Which model to choose?
+
+https://help.xlstat.com/customer/en/portal/articles/2062461-which-statistical-model-should-you-choose-?b_id=9283
+
+According to this key I have one dependent or response variable (y), which is my gene expression and which is continuous. Then I have several explainatory or independent (x) variables or predictors (TA, phosphate, nitrate; light, sal, pH, Temp.), which are continous or seen as 4 treatments are categorical.
+
+Variables can be classified as **categorical** (aka qualitative) or **numerical** (aka quantitative). Categorical variables take on values that are names or labels. The color of a ball (e.g., red, green, blue) or the breed of a dog (e.g., collie, shepherd, terrier) would be examples of categorical variables.
+If I decide for categorical variables, then I should not include TA, NO3 or PO43, since they are numerical. I should focus on sample 380, 380+, 1000 and 1000+ or treatment A, B, C and D or switch to Low and High for both factors.
+
+Either these variables are (a) **several qualitative variables** with several levels, such as combinatory effects of CO2 (2 factors) and nutrient levels (2 factors) on the expression rate. In this case I have a mixed model effect and need to run a **multi-way ANOVA (type III)** on the **Gex dataset**  with the following assumptions:
+
+    1) Individuals are independent.
+    2) Variance is homogeneous.
+    3) Residuals follow a normal distribution.
+    4) At least 20 individuals (recommended).
+
+Or (b) assuming I have **one qualitative variables** with k (or 4 treatments) levels, such as sample 380, 380+, 1000 and 1000+, I will need to fit a **one-way ANOVA**. So, I will use the **Gex dataset** for the ANOVA with the same assumptions.
+
+Or (c) assuming to have **several quantitative variables**, such as TA, NO3 and PO43 I need to check on a **multiple linear regression or non-linear models** using the **ca dataset**. The assumptions are the following:
+
+    1) Individuals are independent.
+    2) Variance is homogeneous.
+    3) Residuals follow a normal distribution.
+    4) At least 20 individuals (recommended).
+    5) Absence of multicollinearity (if the purpose is to estimate model parameters).
+    6) No more explanatory variables than individuals.
+
+Also, there is option (d) a split plot design / plaint? comparison (GLMM - **mixed effects model**) with CO2 as fixed, content/jars as random, then nutrient levels again fixed and my expression rate again random? Both factors are fixed effects with both having 2 levels: CO2 (ambient and high) and nutrient (low and high). I have 3 replicates for each of the 4 treatments (2x2), so I have 12 (content 1-12; std 5).
+
+Which test to chosse?
+
+http://www.ecologyandevolution.org/statsdocs/which-test.html
+
+The same results I get with this key. Having a continous depent variable or response and continous independent variables or predictor, I need to do a regression analysis. With categorical variables I should do a ANOVA.
+
+```{r load libraries}
+library(bayesplot)
+library(broom)
+library(car)
+library(coda)
+library(effects)
+library(emmeans)
+library(ggplot2)
+library(ggfortify)
+library(glmmTMB) # to fit a glmmTMB
+library(lme4) #to fit a lme and lmer
+library(mgcv) # for the function GAM
+library(MASS)
+library(mixtools) # to analyse bimodal distribution
+library(MuMIn)
+library(rstan)
+library(rstanarm) # to fit Bayesian models
+# library(BayesianTools): # to use DIC function; since it's masked by MuMIn, load it after MuMIn; this only makes problems!!!
+library(splines) # for using splines
+library(vegan)
+library(tidybayes)
+library(tidyverse)
+```
+
+
+## Gex dataset
+
+I should run an **ANOVA** with this dataset
+
+### Load and have a look at the dataset:
+
+```{r load Gene expression dataset Gex}
+Gex<-read.csv('C:/Users/admin/Desktop/Paper CA/Gex/Sonja_2016-11-29 qPCR CA (changed by Sandra) -  End Point Results_CA.csv', strip.white=T)
+head(Gex)
+```
+
+```{r check for variables in Gex}
+glimpse(Gex)
+#Gex=Gex %>% mutate(Sample=factor(Sample)) # change the sample from a number to a factor; Sample is already a factor!!!
+#Sample 380 = 380ppm, ambient nutrient level, etc.
+# lgl = logical?
+```
+
+```{r summary of Gex}
+summary(Gex)
+```
+
+### Drop rows in the column "Sample" that do not contain a treatment:
+
+The samples, that don't contain a treatment, are the ones that have the standard included. But I don't want to check on the standard, so I drop this.
+
+```{r drop columns in Gex}
+Gex1<-select(Gex, Content, Sample, End.RFU)
+Gex1
+```
+
+```{r arrange Gex1 by Content}
+arrange(Gex1, Content) 
+```
+
+```{r drop Samples with no treatment aligned}
+Gex2<-filter(Gex1, Sample %in% c('380','380+','1000','1000+')) %>% droplevels()
+head(Gex2)
+```
+
+```{r arrange Gex2}
+arrange(Gex2, Content)
+```
+
+### Visualize the dataset
+
+
+```{r plot data points}
+ggplot(Gex2, aes(x=Content, y=End.RFU, group=Sample, color=Sample)) +
+  geom_point(aes(x=Content,y=End.RFU, colour=Sample)) +
+       ggtitle("Gene expression of a carbonic anhydrase") +
+    scale_y_continuous(name="Expression rate") 
+  #scale_x_continuous(name="Content")
+```
+
+```{r plot Ex against content by treatment of Gex2}
+ggplot(Gex2, aes(x=Content, y=End.RFU, group=Sample, color=Sample)) +
+  geom_point(aes(x=Content,y=End.RFU, colour=Sample)) +
+        facet_wrap(~Sample) +
+  geom_smooth(aes(x=Content,y=End.RFU, colour=Sample)) +
+       ggtitle("Gene expression of a carbonic anhydrase") +
+    scale_y_continuous(name="Expression rate")
+```
+
+### Assumption 1: Individuals are independent:
+
+How? By **centering** predictors, the interaction is independent. Use function center.
+
+### Assumption 2: Variance is homogeneous:
+
+**Homogeneity** is checked by validating a **boxplot**.
+
+```{r boxplot of Gex2}
+ggplot(Gex2, aes(x=Content, y=End.RFU, group=Sample, color=Sample)) +
+  geom_boxplot() +
+    scale_y_continuous(name="Expression rate")
+```
+
+**Result**: I have homogeneity since there is no relation between the mean and the variance visible in the boxplot. I don't have zeros. (Does it matter, if I have a rate?) Since I have two factors, I decide to run a two-way ANOVA. But first I will fit a linear model.
+
+I think this is a hint to a not normal distributed dataset, because the Whiskers (lines) are not always the same length and the Quantiles are not equally to each others neither. The mean is not in the middle.
+
+### Assumption 3: Residuals follow a normal distribution:
+
+For this, we check on the QQ-Plot and do the pearson chi square test.
+
+(1) Fit a linear model
+
+```{r fit lm model}
+Gex2.lm<-lm(End.RFU~Sample, data=Gex2)
+```
+
+Check on **coefficients** of the linear model:
+
+```{r coefficients}
+coef(Gex2.lm)
+```
+Check on **residuals** of the linear model:
+
+```{r residuals}
+r<-residuals(Gex2.lm)
+r
+```
+
+(2) Validate linear model:
+
+```{r validate lm model}
+autoplot(Gex2.lm, which=1:6, ncol=2, label.size=3)
+```
+
+**Result**: I have a pattern in my residuals vs. fitted graph. So I do not have homogeneity? Is the Normal QQ Plot, which compares the quantiles with the normal expected data, ok, or are these already tails?
+
+```{r}
+hist(r, breaks=15, main="Distribution of Residuals", xlab="Residuals lm")
+```
+**Result**: Seems like also here is a bimodal distribution. So my data is not normally distributed.
+
+Do a **Chi-square-test** :
+
+```{r chi square test on Gex2}
+Gex2.resid<-sum(resid(Gex2.lm, type="pearson")^2)
+1-pchisq(Gex2.resid, Gex2.lm$df.resid)
+```
+
+**Result**: The value 0 tells me I have a lack of fit. Is my data normally distributed? Let's check with a Shapiro-Wilk test. The higher the W statistic the "more normal" the data. But if the p-value is less than the chosen alpha level (=w), then the null hypothesis is rejected and there is evidence that the data tested are not normally distributed.
+
+The test rejects the hypothesis of normality when the p-value is less than or equal to 0.05. Failing the normality test allows you to state with 95% confidence the data does not fit the normal distribution.
+
+```{r}
+#shapiro.test(End.RFU)
+```
+
+**Result** : My p-value is way less that the W value of 91.8%. Thus my **data is not normally distributed**.
+
+(1) Fit log transformed lm:
+
+Maybe if I log **transform** my data, they are normally distributed.
+
+```{r log transform lm}
+Gex2.lm1<-lm(log(End.RFU)~Sample, data=Gex2)
+```
+
+(2) Validate log transformed lm:
+
+```{r autoplot Gex2}
+autoplot(Gex2.lm1, which=1:6, ncol=2, label.size=3)
+```
+
+**Result** : I have a pattern still in my residuals plot.
+
+Do a **Chi-square-test** :
+
+```{r}
+Gex2.resid<-sum(resid(Gex2.lm1, type="pearson")^2)
+1-pchisq(Gex2.resid, Gex2.lm1$df.resid)
+```
+
+**Result**: Now my data seems to be normally distributed, because the goodness of fit gives me 1 as the resulting value. And I have an independent variable?
+
+
+
+### Multiple Linear Regression
+
+Does not apply, if I assume levels for my experimental design
+
+Maybe I try a **multiple linear regression**. So we check for linearity (relationship between the independent and dependent variables to be linear) with a scatterplot.
+
+http://www.stat.yale.edu/Courses/1997-98/101/linmult.htm
+
+
+```{r}
+scatterplotMatrix(~log(End.RFU)+Sample, data=Gex2, diagonal='boxplot')
+```
+**Result** : Seems like the overall relation is linear. The expression decreases when taking into account nutrients and/or CO2. But can I ignore the bump in the End.RFU=Expressoin rate? I have two means, do I have to split my dataset??? Maybe into low CO2 and high CO2? I have a **bimodal distribution**.
+
+```{r}
+attach(Gex2)
+histogram(Gex2$End.RFU, breaks=15, main="Bimodal distribution of the expression rate", xlab="Gene expression rate")
+```
+
+The histogram to test for linearity gets created with the predictor values x?!
+
+```{r}
+hist(Gex2$End.RFU, breaks=15, main="Bimodal distribution of the expression rate", xlab="Gene expression rate")
+```
+
+Is the expression rate different for high and low CO2?
+
+What is the mean expression rate in every sample/Treatment?
+
+```{r}
+aggregate(End.RFU~Sample, FUN=mean)
+```
+**Result** : Seems like the factor CO2 is having an impact on the expression rate. If the mean of the low CO2 treatment is lower, that's how I get the bimodal distribution, right?
+
+
+
+
+### Plot Ex against low CO2 
+
+Therefore, I need to use Sample 380 and 380+ only, so I subcreate Gex2 calling it Gex2LCO2.
+
+```{r}
+Gex2LCO2<-filter(Gex2, Sample %in% c('380','380+')) %>% droplevels()
+Gex2LCO2
+```
+
+```{r plot low CO2}
+ggplot(Gex2LCO2, aes(y=End.RFU, x=Content, group=Sample, color=Sample)) +
+  geom_point()+
+       ggtitle("Gene expression at 380 ppm CO2") +
+    scale_y_continuous(name="Expression rate") +
+  geom_smooth(method='lm', se=FALSE) +
+  facet_wrap(~Sample)
+
+ggplot(Gex2LCO2, aes(y=End.RFU, x=Content, group=Sample, color=Sample)) +
+  geom_boxplot()+
+       ggtitle("Gene expression at 380 ppm CO2") +
+    scale_y_continuous(name="Expression rate") +
+  facet_wrap(~Sample)
+```
+
+
+### Plot Ex against high CO2
+
+Therefore, I need to use Sample 1000 and 1000+ only, so I subcreate Gex2 calling it Gex2HCO2.
+
+```{r}
+Gex2HCO2<-filter(Gex2, Sample %in% c('1000','1000+')) %>% droplevels()
+Gex2HCO2
+```
+
+```{r plot high CO2}
+ggplot(Gex2HCO2, aes(y=End.RFU, x=Content, group=Sample, color=Sample)) +
+  geom_point()+
+       ggtitle("Gene expression at 1000 ppm CO2") +
+    scale_y_continuous(name="Expression rate") +
+  geom_smooth(method='lm', se=FALSE) +
+  facet_wrap(~Sample)
+
+ggplot(Gex2HCO2, aes(y=End.RFU, x=Content, group=Sample, color=Sample)) +
+  geom_boxplot()+
+       ggtitle("Gene expression at 1000 ppm CO2") +
+    scale_y_continuous(name="Expression rate") +
+  facet_wrap(~Sample)
+```
+
+Two peaks could also indicate your data is sinusoidal. If you suspect your data might be following a wave-like pattern, create a scatter plot or a run sequence plot to double-check for sinusoidal patterns. You could also make a lag plot (verzoegert); an elliptical (oval) pattern would confirm that the data is sinusoidal.
+
+```{r lag plot}
+lag.plot(End.RFU, lags=4)
+```
+**Result** : Does that count as elliptical shape to confirm the data is sinusoidal?
+
+What now?
+
+
+### Mixtools
+
+In order to fit a bimodial distribution data, I use this function.
+
+```{r}
+Gex2.mixmdl <- normalmixEM(Gex2$End.RFU, lambda=c(0.83, 0.17), mu=c(2090.95, 1794.35), sigma=c(163.67, 13.68))
+```
+
+**Result**: 4 iterations means?
+
+In this way I get the parameters, that I can enter into the fit above: 
+
+```{r}
+Gex2.mixmdl[c("lambda", "mu", "sigma")]
+summary(Gex2.mixmdl)
+```
+
+This is the plotted fit:
+
+```{r}
+plot(Gex2.mixmdl)
+```
+
+
+Plot the model:
+
+```{r}
+# cex tells you how big to magnify a text, default is 1; cex.main is for titles, lab for labels and axis for axes
+plot(Gex2.mixmdl, density = TRUE)
+```
+
+**Result** : The red curve doesn't quiet show the correct distribution. Neither the green one really.
+
+Validate the model with a chi square test.
+
+```{r}
+#Gex2.mix.resid<-sum(resid(Gex2.mixmdl, type="pearson")^2)
+#1-pchisq(Gex2.mix.resid, Gex2.mixmdl$df.resid) # Error in pchisq(Gex2.mix.resid, Gex2.mixmdl$df.resid) : Non-numeric argument to mathematical function
+```
+
+Compare the model with AIC:
+
+```{r}
+#AIC(Gex2.mixmdl, Gex2.lm) # Error in UseMethod("logLik") : no applicable method for 'logLik' applied to an object of class "mixEM"
+#multmixmodel.sel(Gex2.mixmdl, comps=1:4, epsilon=0.001) # Error in apply(y, 1, sum) : dim(X) must have a positive length
+```
+
+Parametric Bootstrap method is a variance estimation, which might help me to validate my mixed model? We want a small variance, so that the data points are close to the mean.
+
+I worked accroding to this link:
+https://cran.r-project.org/web/packages/mixtools/vignettes/mixtools.pdf
+
+```{r}
+#regmixEM(End.RFU, Sample, lambda=c(0.75, 0.25), beta=c(2037.20, 2354.09), sigma=c(164.06, 21.34), k=2)
+```
+
+-25.78, -45.41
+Note: In statistics, the standard deviation (SD, also represented by the Greek letter sigma σ or the Latin letter s) is a measure that is used to quantify the amount of variation or dispersion of a set of data values.
+
+What is label-switching in stats?
+
+```{r}
+#set.seed(seed) Set the seed of R's random number generator,
+set.seed(123)
+Gex2boot <- boot.se(Gex2.mixmdl, B = 1000)
+```
+
+```{r}
+rbind(range(Gex2boot$beta[1,]), range(Gex2boot$beta[2,]))
+```
+
+```{r}
+Gex2boot[c("lambda.se", "beta.se", "sigma.se")]
+```
+
+What now?
+
+### Two factorial ANOVA
+
+This shows exactly my experimental design:
+
+http://www.flutterbys.com.au/stats/tut/tut7.6a.html
+
+Hypothesis tests assume that the residuals are:
+
+    - normally distributed. Boxplots using the appropriate scale of replication (reflecting the appropriate residuals/F-ratio denominator (see table above) should be used to explore normality. Scale transformations are often useful
+    - equally varied/homogeneity. Boxplots and plots of means against variance (using the appropriate scale of replication) should be used to explore the spread of values. Residual plots should reveal no patterns. Scale transformations are often useful
+    - independent of one another
+    - balanced
+
+BUT: Can I run an ANOVA when it assumes normal distribution, when I have a bimodal distribution?? I guess no.
+
+A boxplots shows, if I have normality, when $ y ~ A * B $, where y is my Ex, A my first factor CO2 and B my second factor nutrient. How can I use CO2 and nutrients as vectors??
+
+CO2 is Sample 380 ~ 1000 or treatment A+B ~ C+D
+
+Nut is NA ~ +           or treatment A+C ~ B+D
+
+I will correct my excel sheet called "ca" and order it in this way (similar to the quinn dataset):
+
+I implement CO2 high or low and Nutrients high or low as FACTORS!
+
+```{r}
+head(Gex2.lm)
+# 1000 is the intercept!!!
+```
+
+```{r}
+#ggplot(Gex2, aes(y = End.RFU, x = , fill = B)) +
+  #geom_boxplot()
+```
+
+
+
+### One-way ANOVA
+
+Just to give it a try, I will run a ONe-way ANOVA with my logtransformed data Gex2.lm1:
+
+```{r}
+anova(Gex2.lm1)
+```
+
+**Result** : Since the p-value is over 0.05, I don't have a significant effect. So, I will skip the pairwise comparison and try to investigate further the single impact of nutrients and CO2 as numerical factors.
+
+
+
+## ca dataset
+
+I guess to give this more sense for interpretation, I should implement my predictors into the gene expression data, such as nitrate, phosphate, pH, salinity, alkalinity and CO2 partial pressure in ppm and just to be sure also the light intensity. So I will create a new csv file containing the information of Gex.csv and incorporate the information of my parameters. I will call this new csv file 'ca' for carbonic anhydrase.
+This dataset includes the gene expression rates AND the parameteres influencing this response.
+
+So, my response is the gene expression and the predictors are several. The main drivers I expect to be nutrients and CO2 (TA). These are my factors, having two levels each - low and high. In total I have 4 treatments, while A and B have low CO2 levels (380ppm) and C and D have high CO2 levels (1000ppm). A stands for low nutrient levels (NO3: 1µM and PO4 3-: 0.2µM) and a partial pressure of CO2 of 380 ppm. B) stands for high nutrient levels (NO3: 10µM and PO4 3-: 2µM) and 380 ppm; C) means low nutrient levels and 1000 ppm and D) has high nutrient levels and 1000 ppm.
+
+I should do a **multiple linear (or non-linear) regression** with my numerical explainatory variables.
+
+But first, let's have a look at the new dataset:
+
+### Load and have a look at the dataset:
+
+```{r load ca dataset}
+ca<-read.csv('C:/Users/admin/Desktop/Paper CA/Gex/ca.csv', strip.white=T)
+head(ca)
+```
+
+```{r glimpse on ca}
+glimpse(ca)
+# fct = characters = variables      = Content, Treat
+# dbl = double = decimals           = Ex, Light, Temp, Sal, pH, NO3, PO43
+# int = integers = whole numbers    = TA
+```
+
+```{r summary of ca}
+summary(ca)
+```
+
+```{r structure of ca}
+str(ca)
+```
+
+
+### Visualize the dataset
+
+These two should look the same:
+
+```{r}
+ggplot(ca, aes(x=Content, y=Ex, group=Treatment, color=Treatment)) +
+  geom_point(aes(x=Content, y=Ex, group=Treatment, color=Treatment)) +
+       ggtitle("Gene expression of a carbonic anhydrase") +
+    scale_y_continuous(name="Expression rate")
+```
+
+```{r plot content againsts expression for every treatment for ca}
+ggplot(ca, aes(x=Content, y=Ex, group=Treatment, color=Treatment)) +
+  geom_point(aes(x=Content,y=Ex, group=Treatment, color=Treatment)) +
+        facet_wrap(~Treatment) +
+  geom_smooth(aes(x=Content,y=Ex, group=Treatment, color=Treatment)) +
+       ggtitle("Gene expression of a carbonic anhydrase") +
+    scale_y_continuous(name="Expression rate")
+```
+
+**Result** : This is equal to the Gex2 dataset. These are not the up and down regulations, but I can see that the expression rates in every treatment are all around 2000, which is also stated in the summary: mean of Ex = 2040. I wonder, if there is a significant difference of the expression rates between the treatments.
+
+### Plots
+
+Ex against CO2 levels:
+
+```{r}
+ggplot(ca, aes(y=Ex, x=ppm, colour=Treatment)) +
+        geom_point() +
+  geom_smooth(method='lm', se=FALSE) + 
+        scale_y_continuous(name="Expression rate") +
+        scale_x_discrete(name="CO2 level") +
+       ggtitle("Gene expression against CO2 level")
+```
+
+Ex against Nutrient levels:
+
+```{r}
+ggplot(ca, aes(y=Ex, x=nut, colour=Treatment)) +
+        geom_point() +
+  geom_smooth(method='lm', se=FALSE) + 
+        scale_y_continuous(name="Expression rate") + 
+        scale_x_discrete(name="Nutrient level") +
+       ggtitle("Gene expression against nutrient level")
+```
+
+```{r}
+ggplot(data=ca) +
+  geom_boxplot(aes(y=Ex, x=Content)) +
+  facet_grid(ppm~nut) +
+  theme(axis.text=element_text(angle=45, hjust=1)) # it changes the angle of the label in the axes
+```
+
+
+For each treatment:
+
+```{r}
+ggplot(ca, aes(y=Ex, x=NO3, colour=Treatment)) +
+        geom_point() +
+  geom_smooth(method='lm', se=FALSE) + 
+        scale_y_continuous(name="Expression rate") +
+       ggtitle("Gene expression against Nitrate")
+
+ggplot(ca, aes(y=Ex, x=PO43, colour=Treatment)) +
+        geom_point() +
+    geom_smooth(method='lm', se=FALSE) + 
+        scale_y_continuous(name="Expression rate") +
+       ggtitle("Gene expression against Phosphate")
+
+ggplot(ca, aes(y=Ex, x=TA, colour=Treatment)) +
+        geom_point() +
+  geom_smooth(method='lm', se=FALSE) + 
+        scale_y_continuous(name="Expression rate") +
+       ggtitle("Gene expression against TA")
+```
+
+Normal distribution is not quiet visible. Maybe I log transform my data?
+
+```{r log transform and plot again ca parameters}
+
+```
+
+
+Remember, that A (the control) has low nutrient levels, same as C.
+
+For every single parameter in general:
+(dependency and linearity)
+
+```{r normal dist for NO3}
+ggplot(ca, aes(y=Ex, x=NO3)) +
+  geom_point() +
+  geom_smooth(method='lm', se=FALSE) +
+       ggtitle("Gene expression against Nitrate")
+
+ggplot(ca, aes(y=Ex, x=PO43)) +
+  geom_point() +
+  geom_smooth(method='lm', se=FALSE) +
+       ggtitle("Gene expression against Phosphate")
+
+ggplot(ca, aes(y=Ex, x=Light)) +
+  geom_point() +
+  geom_smooth(method='lm', se=FALSE) +
+       ggtitle("Gene expression against Light")
+
+ggplot(ca, aes(y=Ex, x=Temp)) +
+  geom_point() +
+  geom_smooth(method='lm', se=FALSE) +
+       ggtitle("Gene expression against Temperature")
+
+ggplot(ca, aes(y=Ex, x=Sal)) +
+  geom_point() +
+  geom_smooth(method='lm', se=FALSE) +
+       ggtitle("Gene expression against Salinity")
+
+ggplot(ca, aes(y=Ex, x=pH)) +
+  geom_point() +
+  geom_smooth(method='lm', se=FALSE) +
+       ggtitle("Gene expression against pH")
+
+ggplot(ca, aes(y=Ex, x=TA)) +
+  geom_point() +
+  geom_smooth(method='lm', se=FALSE) +
+       ggtitle("Gene expression against TA")
+
+
+```
+
+Note: instead of doing this manually, you could use the scatterplotMatrix. It is exactly that!
+But I want to know, whether the RESIDUALS follow a normal distribution!?
+
+```{r  for Ex against TA}
+
+```
+
+I have linearity, but a pattern in my graph. There are some outliers in the TA. These three outliers are all in the Content 7 in Treatment C. Let's see, what happens, if I take them out.
+
+```{r}
+#select(ca, TA$) %>% droplevels
+ca1<- filter(ca, TA<750) %>% droplevels()
+summary(ca1)
+```
+
+```{r}
+ggplot(ca1, aes(y=Ex, x=TA)) +
+  geom_point() +
+  geom_smooth(method='lm', se=FALSE) +
+         ggtitle("Gene expression against TA without outliers")
+```
+**Result** : Looks good without the outliers. Maybe I switch my analysis to ca1 instead.
+
+```{r}
+ggplot(ca, aes(x=TA, y=Ex, group=Treatment, color=Treatment)) +
+  geom_point(aes(x=TA,y=Ex, group=Treatment, color=Treatment)) +
+       ggtitle("Gene expression against TA per treatment") +
+    scale_y_continuous(name="Expression rate")
+```
+
+```{r barplot of ca}
+#Ex<-table(unlist(ca))
+# barplot(Ex, xlab="Sample", ylab="Expression rate", col=gray(12:0/12))
+# this plot doesn't make sense really... and doesn't work neither...
+```
+
+### Assumption 1: Individuals are independent:
+
+For this I need to use scatterplotMatrix, right? And then have a look, if some variables are connected, i.e. the slope is impacted by another variable.
+
+```{r scatterplotMatrix for ca}
+
+```
+
+
+### Assumption 2: Variance is homogeneous:
+
+```{r boxplots of main drivers}
+ggplot(ca, aes(y=Ex, x=NO3, colour=Treatment)) +
+        geom_boxplot()+
+    scale_y_continuous(name="Expression rate")
+
+ggplot(ca, aes(y=Ex, x=PO43, colour=Treatment)) +
+        geom_boxplot()+
+    scale_y_continuous(name="Expression rate")
+
+ggplot(ca, aes(y=Ex, x=TA, colour=Treatment)) +
+        geom_boxplot() +
+    scale_y_continuous(name="Expression rate")
+```
+
+**Result** : Due to the shape of the boxplot, there is no relation between mean and variance visible and my variance is homogeneous.
+
+What I can also see in these boxplots is that in treatment A, which is the control, for both nutrients and TA, the mean is low and for all other treatments, it's high.
+
+### Assumption 3: Residuals follow a normal distribution:
+
+Let's check on normality using a **Normal QQ-Plot**, which is implemented in the **autoplot function**. I need to fit a lm first though.
+
+I try to fit a **linear model** first, even though I expect a lm should not be plausible:
+
+```{r fit lm for ca}
+ca.lm<-lm(Ex~Treatment, data=ca)
+summary(ca.lm)
+```
+**Result** : No significance between the treatments.
+
+### Validate lm
+
+```{r autoplot lm of ca}
+autoplot(ca.lm, which=1:6)
+```
+
+**Result** : Cook's D is fine, but the pattern in the residuals and the tail in the Normal Q-Q- Plot hints towards non normality in my data.
+
+```{r plot all effects of lm of ca}
+plot(allEffects(ca.lm))
+```
+
+**Result** : Even though, there is a higher expression rate in treatment D, the summary tells us that there is no significant difference.
+
+Is this a **good fit** anyways?
+
+```{r goodness of fit of lm}
+ca.resid=sum(resid(ca.lm, type='pearson')^2)
+1-pchisq(ca.resid,ca.lm$df.residual)
+```
+
+**Result** : Since the p-value is not greater than 0.05, but 0, we reject. it's a lack of fit. Only when getting a value of greater than 0.05, we are good.
+
+
+check for **dispersion**
+
+To calculate the value of dispersion (var/mu), which should be 1, we take the residuals of the model and divide them by the df.
+
+```{r check for dispersion}
+ca.resid/ca.lm$df.residual
+```
+
+**Result** : My model is 36,000 times **overdispersed**. When the observed variance is higher than the variance of a theoretical model, overdispersion has occurred. We took the residuals from original dataset devided by residuals of used model: this is the dispersion, which should be close to 1, which it is not, so it's overdispersed. WHY? Maybe due to excessive zeros>
+
+Just to make sure, check on zeros:
+
+```{r}
+summary(ca)
+```
+
+No zeros, but my model is overdispersed. It might not be a good fit. So, I will use a **negative binomial** instead.
+
+### Rubbish: Fitting a Negative Binomial
+
+(1) Fit a **negative binomial** is not sensible, because I don't have an overdispersed Poisson distribution, neither counts.
+
+```{r fit nb}
+# uses log link just like Poisson
+#ca.glm3<-glm.nb(Ex~Treat, data=ca)
+```
+
+Seems like also here I can't use data with non-integer.
+
+### Fit a **glm** with **gaussian** distribution
+
+```{r}
+ca.glm1<-glm(Ex~Treatment, data=ca, family='gaussian')
+```
+
+### Poisson
+
+```{r poisson on ca}
+#ca.glm2<-glm(Ex~Treat, data=ca, family='poisson')
+```
+
+NOTE : Remember that a poisson distribution doesn't seem to be appropriate, since I have non-integer.
+
+```{r}
+autoplot(ca.glm1, which=1:6)
+```
+
+My residuals against the fitted have a pattern. Might not matter, because we know we don't have normality???
+
+```{r}
+plot(allEffects(ca.glm1))
+summary(ca.glm1)
+```
+
+**Result** : I don't have significant differences within the treatments... :(
+
+```{r}
+AICc(ca.lm, ca.glm1)
+```
+
+**Result** : these models are equally bad.
+
+
+## ANOVA with glm1 model (=gaussian)
+
+```{r}
+anova(ca.glm1)
+```
+
+Doing ANOVA on the glm doesn't make sense at all. Also, I have no df in this analysis.
+
+
+## Multiple regression model
+
+In order to run a **multiple regression model**, check if my data are linear or non linear: 
+
+Are my data linear?
+
+```{r}
+ggplot(ca, aes(y=Ex, x=NO3)) +
+        geom_point() +
+  geom_smooth() +
+       scale_y_continuous(name="Expression rate")
+
+ggplot(ca, aes(y=Ex, x=PO43)) +
+        geom_point() +
+  geom_smooth() +
+       scale_y_continuous(name="Expression rate")
+
+ggplot(ca1, aes(y=Ex, x=TA)) +
+        geom_point() +
+  geom_smooth() +
+       scale_y_continuous(name="Expression rate")
+```
+
+**Result** : This is not testing for linearity, isn't it?
+Anyhow, my data is not linear. Of course not, because I have different treatments. Since A and C have low nutrient levels, they should have a similar expression rate. Same for B and D. When it comes to TA, then A and B should be similar, same for C and D.
+
+Maybe I need to break my data down into the four treatments A, B, C and D.
+
+
+A big question here is, if I can use this data and if it's linear, and does it has to be linear???
+
+Assumptions: (1) all predictors (single impact) should be uncorrelated to another called no multi-co-linearity (centering might make them independent?), (2) predictors should be linear to ??? (3) ???
+
+```{r}
+#scatterplotMatrix(~Ex+Light+Temp+Sal+pH+TA+NO3+PO43, data=ca, diagonal='boxplot')
+```
+
+**Result** : We aim to have graphs with equally spread curves. TA should be log transformed. I might also exclude Temp., since this was always stable.
+
+```{r}
+#scatterplotMatrix(~Ex+Light+Sal+pH+log(TA)+NO3+PO43, data=ca, diagonal='boxplot')
+```
+
+**Result** : It seems in this scatterplot that my Ex and TA is positively correlated. The effect of nutrients in not clearly visible though.
+
+I will center and scale predictors with the function scale:
+
+```{r fit lm with centered and scaled predictors}
+ca.lm1<-lm(Ex~scale(Light) + scale(Sal) +scale(pH) + scale(log(TA)) + scale(NO3) + scale(PO43), data=ca)
+```
+
+**Result** : Validate the included variables in the lm fit with the variance inflation factor. When the values are less than 3 (or 5), we accept and include. Values were removed or taken because the vif was less or greater than 3 or 5. If vif is to big, (1) you take them out of the model (2) you combine the variables (predictors) by multivariate techniques since they correlate (3) you run the correlated predictors in separated models.
+
+NOTE: An lm is not suitable for my data, I should change this, right?
+
+```{r vif for lm1}
+vif(ca.lm1)
+```
+
+**Result** : Too bad that my nutrients have a vif too high. I could combine them as nutrient model. Light has interestingly a value less than 3. TA as well, which is good.
+
+```{r check on normality of lm?}
+#autoplot(ca.lm1, which=1:6)
+# since we run a gausian model, you don"t need to look at the QQ plot, but look at the residuals vs. fitted plot
+# you can't have an overdispersed gausian model
+```
+
+**Result** : I have this weird jump in my resid vs. fitted graph....!!!! Is that to be ignored??
+
+```{r plot effects of lm}
+plot(allEffects(ca.lm1, partial.residuals=TRUE))
+# intercept has meaning since we centered; is predicted expression of enzyme, when all the others are average means
+summary(ca.lm1)
+#results is the estimated magnitude of the effect of light when all of the other predictors are out their means; the effect of light standardzed all the means; the means are 0
+# look at the probabilities of the t-values and see that (0.00022) TA has a correlation???; TA is important and salinity has an effect (0,02010), because we centered and scaled; the biggest effect is the one with the biggest number of the estimates, which is the phosphate (141.89) and has a positive effect, but no significance; salinity has a strong and neg. effect (-127.66); also TA has a positive effect (128.78)
+# drop the least significant until you end up with only significant ways (old function drop); there is a better way to do that, which is ???
+```
+
+**Result** : TA and salinity have significant effects.
+
+Check for **confidence intervals**:
+
+```{r confidence intervals}
+# confidence intervals tell you if and how big it is. if 0 is in the interval of the scale, then there is no effect; if there is not a zero, then there is an effect
+# this is the same than a p-value, but with significance AND effect
+# check the table and numbers from above!
+confint(ca.lm1)
+# corrected for small sample sizes (less than around 30 values per predictor), thats why there is the c
+AICc(ca.lm1)
+# the value 476.2943 doesn't tell you if it's big or not, good or bad
+```
+
+**Result** : It is the same: There is a positive effect of TA and a negative of Sal.
+
+the dredge function aims to have only the parameters that we need to have (parsimonious means the simpliest); a model with the fewest bits it needs to run all the combinations of the predictors to get the best combination; called dredge
+
+```{r run and show all combinations}
+# na means no value; it ignores it by default; with this function it takes them into account
+# you need to have the same sample size to compare AIC's
+ca.lm1 = update(ca.lm1, na.action=na.fail)
+# fit all 64 combinations and rank according to the AIC, where best is smallest
+dredge(ca.lm1, rank="AICc")
+# outcome of the dredge is:
+# regression coefficient is scl(log(TA))
+# the models from 59 to 63 (max) are the best, because the AIC has few units;
+# the delta is the difference between the best and the current AIC
+# a delta of 4 or more is not a good model
+# to get the best value for the predictors, we could average the coefficients, but we don't do that
+# instead we take into account the weights, so we average the weights by multiply the first value of the coefficient with the weight and add the folowing one
+```
+
+**Result** : 
+
+Average the weights
+
+```{r average weights}
+# it is the average of the coefficients in all the models, that have a delta less or as great as 4
+ca.av<-model.avg(dredge(ca.lm1, rank="AICc"), subset=delta<=4)
+```
+
+```{r what predictor is important?}
+summary(ca.av)
+# outcome: the relative importance 
+# 18 models out of ? have 100% importance of TA included; salinity with 64% is important, but probably not phosphate with 49%
+# dredge is not recommended to do!
+```
+
+```{r}
+anova(ca.lm1)
+```
+***Result** : This has significant p-values for TA and NO3!
+
+Create **candidate models** with factors you think are important
+
+You can have a different approach instead of mathematically provide a sensitive model, you can better create your own model, such as a model that includes the factors that you think they are important and have influence; that way you already have a to give a logical reason why these factors are relevant. Hence, ecological vs. statistical model!!! Check if the model you created actually to provide values that tells you this model shows that the predictors are indeed important. The update function just takes what has already been done and add what you wish to add; here only chosen scaled predictors
+
+```{r create candidate models with factors you think are important}
+ca.lm2<-update(ca.lm,  .~scale(NO3) + scale(PO43)) # nutrient model
+ca.lm3<-update(ca.lm,  .~scale(Light) + scale(TA)) # bleaching model
+ca.lm4<-update(ca.lm,  .~scale(TA)) # OA model
+ca.lm5<-update(ca.lm,  .~scale(NO3) + scale(PO43) + scale(TA)) # treat model
+ca.lm6<-update(ca.lm,  .~scale(TA) + scale(Sal)) # sal model
+# no predictors to kinda have a control
+ca.null<-update(ca.lm, .~1) # no-predictor model
+```
+
+
+Check, which one is the best fit with comparing the **AIC**:
+
+```{r}
+AICc(ca.lm2, ca.lm3, ca.lm4, ca.lm5, ca.lm6, ca.null)
+# result: high AIC is bad, so lm1 is worse than the no-predictor model, habitat model is important; you compare them also to the global model, which is loyn.lm
+```
+
+**Result** : lm4 my OA model has the best AIC. Since the lm2 is worse than the control, I think they don't make sense to use even though it has a higher df.
+
+I AM NOT SURE, IF I CAN CONTINUE WITH LM IF THAT MIGHT NOT BE A GOOD FIT!!!
+
+```{r}
+summary(ca.lm4)
+```
+
+**Result** : most important predictor is TA due to the value of 99.21. 34 df gives the model some power. But I can explain only 27.58%, which can be seen in the r square of 0.2758. That make sense considering that my TA is only high for content 7.
+
+Let's check on the other models (3, 5 and 6) anyhow:
+
+```{r}
+summary(ca.lm3)
+```
+
+**Result** : is similar to lm4
+
+```{r}
+summary(ca.lm5)
+```
+
+**Result** : is similar to lm4, even though I can explain 33.4%.
+
+```{r}
+summary(ca.lm6)
+```
+
+**Result** : is similar to lm4.
+
+Check on the conf int.
+
+```{r}
+confint(ca.lm4)
+```
+
+How do I interprete this?
+
+I am 95% confident that the true value lies between 1985.17 and 2095.64.
+
+
+### Visualize the results of the lm:
+
+```{r plot the calculated data points vs. the raw data}
+ca.grid = with(ca, list(TA=seq(min(TA), max(TA), len=100)))
+newdata=emmeans(ca.lm4,~TA, at=ca.grid) %>%
+        as.data.frame
+head(newdata)
+ggplot(newdata, aes(y=emmean, x=TA)) +
+        geom_ribbon(aes(ymin=lower.CL, ymax=upper.CL), fill='blue', alpha=0.3) +
+        geom_line()
+ggplot(newdata, aes(y=emmean, x=TA)) +
+        geom_ribbon(aes(ymin=lower.CL, ymax=upper.CL), fill='blue', alpha=0.3) +
+        geom_line() +
+        scale_x_log10()
+ggplot(newdata, aes(y=emmean, x=TA)) +
+        geom_ribbon(aes(ymin=lower.CL, ymax=upper.CL), fill='blue', alpha=0.3) +
+        geom_line() +
+        scale_x_log10() +
+        geom_point()
+# to get the partial observation of TA values acutally observed and taken
+#partial.obs=emmeans(ca.lm4, ~TA, at=list(TA=ca$TA)) %>%
+#        as.data.frame %>%
+#        mutate(emmean=emmean+resid(ca.lm4))
+# this is the point when you calculate the true position of the dots by taking the residual adding them to the regression line;  because the raw data is not standardized, we cannot include them into the plot
+# to display the difference between the calculated and the raw data, see this
+#ggplot(newdata, aes(y=emmean, x=TA)) +
+#        geom_ribbon(aes(ymin=lower.CL, ymax=upper.CL), fill='blue', alpha=0.3) +
+#        geom_line() +
+#        scale_x_log10() +
+#        geom_point(data=partial.obs) +
+#        geom_point(data=ca, aes(y=Ex), color="red")
+```
+
+**Result** : The outcome of the multiple regression analysis is that TA is the main driver in my expression rate of the CA. The nutrients don't seem to influence much. If so, it would be the salinity.
+
+
+## Multiple non-linear regression model (nls)
+
+Probably I need to fit a **multiple non-linear regression model** (nls), because my data are not linear. How?
+
+```{r}
+#ca.nls<-nls(Ex~scale(Light) + scale(Sal) +scale(pH) + scale(log(TA)) + scale(NO3) + scale(PO43), data=ca)
+```
+
+
+## Which model? lmer or glmer? Poisson
+
+With which model should I fit my data? According to this website, maybe I can try an lme or better glmer. Let me compare with the R course from Murray how to do that.
+
+https://www.zoology.ubc.ca/~schluter/R/fit-model/
+
+Which family should I use to fit my **glmer**? binomial doesn't make sense, since I don't have yes or no data. gaussian neither, since my data is not linear. Gamma? Poisson... non integer problem....
+
+### lme vs. lmer vs. glmmtmb
+
+**lme** : We will start by fitting the linear mixed effects model.
+
+The hierarchical random effects structure is defined by the random= parameter. In this case, random=~1|block indicates that blocks are random effects and that the intercept should be allowed to vary per block.
+
+```{r}
+ca.lme1<-lme(Ex~ppm, random = ~1|nut, data=ca, method="REML")
+```
+
+```{r}
+# allow the effect to be different for each nutrient
+ca.lme2<-lme(Ex~ppm, random=~ppm|nut, data=ca, method='REML')
+```
+
+
+**lmer**: In contrast to lme(), the lmer() routine does not specify separate fixed and random formulae. Instead the random effects are indicated as something like (1|block) for random intercept and (x|block) for random intercept/slope. 
+
+```{r}
+ca.lmer<- lmer(Ex~ppm + (1|nut), data=ca, REML=TRUE)
+```
+
+
+**glmmTMB** :
+
+```{r}
+ca.glmmTMB<- glmmTMB(Ex~ppm + (1|nut), data=ca)
+```
+
+Compare all lme models:
+
+```{r}
+AICc(ca.lm, ca.lm4, ca.lme1, ca.lme2, ca.lmer, ca.glmmTMB)
+```
+**Result** : The lowest AIC has the lme1/lmer, but the highest df the lme2. Let's continue with lme1
+
+Compare all fitted models:
+
+```{r}
+#AICc(ca.lm, ca.lm4, ca.glm, ca.glm1, ca.glm2, ca.glm3, ca.glmer, ca.lme1, ca.lme2, ca.lmer, ca.glmmTMB, ca1.gp.gam)
+```
+**Result** : The best is the glmer!
+
+```{r likelihood ratio test}
+# there is no evidence one is better than the other, since the p-value is higher than 0.05
+anova(ca.lme1, ca.lme2)
+```
+
+### Validate lme1
+
+```{r so now we use the easier model and validate lme1}
+# autoplot doesn't work with this lme, so we use the one that comes with lme
+plot(ca.lme1)
+```
+**Result** : We have a pattern.... Because I have a bimodal distribution?
+
+```{r}
+summary(ca.lme1)
+```
+**Result** : My nutirnets are not random effects!?!
+
+### Validate glmer
+
+```{r so now we use the easier model and validate glmer}
+# autoplot doesn't work with this lme, so we use the one that comes with lme
+#plot(ca.glmer)
+```
+
+## Polynomial?
+
+fit a polynomial??? (Split plot design by murray)
+
+
+```{r fit an glmer}
+#ca.glmer=lmer(Ex~ppm+(1|nut),data=ca)
+```
+
+**Result** : 
+
+```{r}
+#summary(ca.glmer)
+```
+
+```{r}
+# fitted residuals against standardised residuals
+#plot(ca.glmer)
+```
+
+```{r}
+#ca.aug=augment(ca.glmer)
+#ggplot(ca.aug, aes(y=.wtres, x=ppm)) +
+  geom_boxplot()
+```
+
+```{r}
+#ggplot(ca.aug, aes(y=.wtres, x=nut)) +
+#  geom_boxplot()
+```
+
+```{r goodness of fit of glmer}
+#ca.resid=sum(resid(ca.glmer, type='pearson')^2)
+#1-pchisq(ca.resid, df=df.residual(ca.glmer))
+
+# Maximum likelihood doesn't do anything with residuals, but with likelihood (deviance)
+# the outlier has an impact on the residuals, that's why there is a lack of fit
+#1-pchisq(deviance(ca.glmer), df.residual(ca.glmer))
+```
+
+**Result** : There is a lack of fit (0). distribution issue?
+
+```{r}
+#coefficients(ca.glmer)
+```
+
+
+```{r}
+#plot(allEffects(ca.glmer), type='response')
+```
+
+**Result** : The expression rate decreases with lower CO2 concentration.
+
+
+## Mixed effects model (GLMM) / Split-Plot Design
+
+Generalized linear mixed effects models; using REML (Maximum Likelihood); lmer/nlme for non linear
+
+Use ca1, which doesn't contain the outlier!
+
+I would like to do the planned comparison, if I just knew which distribution to fit. Log transform my data to avoid normality assumption (log(TA))?
+
+```{r planned comparison with ca}
+# make sure which is the order of your levels
+# orthogonal or independent 
+levels(ca$Treatment)
+```
+
+```{r continue with contrast comparison}
+# check your table in your notebook to know, which comparisons you aim to do
+# this is how your create your matrix
+contr.Treatment=cbind(control=c(1, -1/3, -1/3, -1/3),
+                     NoNut_vs_Nut=c(-1/2, 1/2, -1/2, 1/2),
+                      NoCO2_vs_CO2=c(-1/2, -1/2, 1/2, 1/2),
+                     control_vs_both=c(-1, 0, 0, 1))
+contr.Treatment
+```
+
+```{r round up}
+# it's easier if you round your values, so it looks better
+# we round to 1 decimal 
+round(crossprod(contr.Treatment),1)
+#that's how it may look if you don't round: crossprod(contr.Treat)
+```
+
+Fit the correct model here, which is not glmer, since this had a poisson distribution, which is why I get the non integer problem again!!! Not true: It had gaussian!
+
+```{r}
+
+```
+
+
+```{r}
+#emmeans(ca.glmer, ~Ex, contr=list(contr.Ex), type='response')
+```
+
+**Result** : Check the contrast table, which shows the comparisons. There is no change in the probability of gene expression, which we can see at the high p-value and negative estimate of -0.04! No p-value shows any significance!
+
+
+```{r}
+#MuMIn::r.squaredGLMM(ca.glmer)
+```
+
+
+**Result** : Fixed effects explain 4.6 % and around 4.6% that you cannot explain??
+
+
+
+
+check for the **offset** function!
+
+An offset term is used for a covariate with *known* slope. An offset is a term to be added to a linear predictor, such as in a generalised linear model, with known coefficient 1 rather than an estimated coefficient.
+
+
+
+#### Data Transformation
+
+Normalize your data by log transformation before using. Guess it's about TA.
+
+Transforming to a uniform distribution or an arbitrary distribution with the rank transformation:
+
+# collect the values together, and assign them to a variable called y
+c(32.2, 10.0, 135.2, 145.3, 145.301) -> y
+
+```{r}
+y<-ca$Ex
+y
+```
+
+rank( y ) # give their rank
+```{r}
+rEx<-rank(y)
+rEx
+```
+
+
+
+## PCA
+
+In order to identify which is the main driver, don't forget to run a PCA. Maybe this confirms that nutrients or CO2 or the combination have the main impact on the ca expression. Also, which one has a greater impact.
+
+```{r}
+#now we forth root transform (put down notes from rec) the variables to normalize and help out with linearity, which we have
+# decostand(.^0,25, MARGIN=2, 'max'): to do standardizations; MARGIN=2 is column, MARGIN=1 is rows, so we standardize to the maximum of the columns
+ca.stnd=ca %>% mutate_if(is.numeric, funs(decostand(.^0.25, MARGIN=2, 'max')))
+```
+
+```{r}
+attach(ca)
+histogram(ca.stnd$Ex, breaks=20, main="Bimodal distribution of squareroot transformed expression rate", xlab="Gene expression rate")
+```
+
+
+```{r}
+ca.rda <-rda(ca.stnd[,5:12], scale=TRUE)
+```
+
+Did I choose the columns Ex until PO43 correctly with [,5:12]?
+
+```{r}
+summary(ca.rda, display=NULL)
+```
+
+I have 7 principle components, such as PC1 Light, PC2 Temp, PC3 Sal, PC4 pH, PC5 TA, PC6 NO3 and PC7 PO43. I should include the first 3, giving me 78%.
+
+```{r}
+screeplot(ca.rda)
+```
+
+Seems like I can include the first two parameters. How do I know which parameter stands for which PC?
+
+```{r}
+ggplot(ca.stnd, aes(y=Ex, x=Light, color=Treatment)) +
+  geom_point(size=5)
+```
+
+```{r}
+ggplot(ca.stnd, aes(y=Ex, x=Sal, color=Treatment)) +
+  geom_point(size=5)
+```
+
+```{r}
+ggplot(ca.stnd, aes(y=Ex, x=pH, color=Treatment)) +
+  geom_point(size=5)
+```
+
+
+```{r}
+ca.melt<-ca.stnd %>% gather(key=Parameter, value=Ex, Light:PO43)
+ggplot(ca.melt, aes(y=Ex, x=Parameter, color=Treatment)) +
+  geom_point(size=2) +
+  facet_wrap(~Parameter)
+```
+
+I would like to put the single parameter on the x-axis, but don't know how...
+
+```{r}
+biplot(ca.rda, scaling=1, main="Scaling=1")
+Xmat = model.matrix(~-1+Treatment, data=ca)
+plot(envfit(ca.rda, Xmat))
+```
+What does sit mean? is it sites? I need to adjust my data to the functions and see what I need to do to get what I want, which is the main driver of my expression rate.
+
+Interpretation:
+
+In treatment A no factor stands out.
+
+In treatment B the main drivers are the nutrients PO43 and NO3.
+
+In treatment C light mostly drives the expression rate.
+
+In treatment D salinity is the main factor.
+
+Get the values to the plot:
+
+```{r}
+ca.sites.scores<-as.data.frame(scores(ca.rda, display='sites'))
+head(ca.sites.scores)
+```
+
+
+```{r}
+ca.sites.scores<-data.frame(ca.sites.scores, ca)
+head(ca.sites.scores)
+```
+
+```{r}
+ggplot() +
+  geom_point(data=ca.sites.scores, aes(y=PC2, x=PC1, color=Treatment))
+```
+
+```{r}
+#ca.species.scores<-as.data.frame(scores(ca.rda, display='treatments'))
+#head(ca.sites.scores)
+```
+
+
+```{r}
+ca.sites.scores<-data.frame(ca.sites.scores, ca)
+head(ca.sites.scores)
+```
+
+```{r}
+#ca.species.scores$Parameters<-rownames(ca.species.scores)
+
+#hjust<-ifelse(ca.species.scores$PC1>0,0,1)
+#vjust<-ifelse(ca.species.scores$PC2>0,0,1)
+
+#ggplot() +
+  #geom_point(data=ca.sites.scores, aes(y=PC2, x=PC1, color=Treat)) +
+  #geom_text(data=ca.sites.scores, aes(y=PC2, x=PC1, label=Treat, hjust=-0.2, color=Treat),
+            #show.legend=FALSE) +
+  #geom_segment(data=ca.species.scores, aes(y=0, x=0, yend=PC2, xend=PC1),
+               #arrow=arrow(length=unit(0.3,'lines'))) +
+ # geom_segment(data=NULL, aes(y=-Inf, x=0, yend=Inf, xend=0), linetype='dotted') +
+  #geom_segment(data=NULL, aes(y=0, x=-Inf, yend=0, xend=Inf), linetype='dotted') +
+  #theme_classic() +
+  #geom_text(data=ca.species.scores,
+                #aes(y=PC2, x=PC1, label=Species), hjust=hjust, vjust=vjust)
+```
+
+#### Stop here! This is the R-Mode and due to our lack in linearity, we should run a Q-Mode Analysis. So first we standardize
+
+```{r}
+#now we forth root transform (put down notes from rec) the variables to normalize and help out with linearity, which we have
+# decostand(.^0,25, MARGIN=2, 'max'): to do standardizations; MARGIN=2 is column, MARGIN=1 is rows, so we standardize to the maximum of the columns
+#ca.stnd1=ca %>% mutate_if(is.numeric, funs(decostand(.^0.25, MARGIN=2, 'max')))
+
+#ca.stnd1<- wisconsin(ca[,-1]^0.25)
+```
+
+Doesn't work. What should I do?
+
+I think an ANCOVA is the correct thing to do.
+
+Shapiro test for linearity.
+
+the mean for every parameter in every treatment. Seems like the mean of content 7 is higher than 1-6, which is treatment a and b, but the content 8-12 is not high, but should be, since it is treatment c and d!!!
+
+
+Linearity for every single parameter defining the treatments (TA, NO# and PO43):
+
+```{r}
+ca.lmppm<-lm(Ex~ppm, data=ca)
+```
+
+```{r}
+autoplot(ca.lmppm)
+```
+**Result** : Rubbish!
+
+## GAM
+
+**Don't fit a GAM, because your main predictors nut and ppm are not dependng on each others. Unless you would use, pH, TA, etc. as predictors, which you don't. So drop this model fitting!**
+
+non-linear generalized additive models
+
+Since a GAM is just a penalized GLM, residual plots should be checked, exactly as for a GLM.
+
+(a) How many splines?
+
+(b) How many knots? We increase the number of knots due to our small dataset.
+
+(c) Which kind of spline? # bs is base of the spline
+# cp means penalized cubic spline # tp stands for thin plate.
+
+I believe the best is to have a penalized spline, since it means that the spread of my data is not uniform. I need a different spacing of knots.
+
+```{r two knot GAM fit}
+# fitting a spline of two knots, which why we add ns
+# degress of freedom is minus one, knots are 2
+ca1.spline2=lm(Ex~ns(TA, df=2), data=ca1)
+plot(allEffects(ca1.spline2, partial.resid=TRUE),
+     partial.residuals=list(smooth=FALSE))
+```
+
+```{r three knots}
+ca1.spline3=lm(Ex~ns(TA, df=3), data=ca1)
+plot(allEffects(ca1.spline3, partial.resid=TRUE),
+     partial.residuals=list(smooth=FALSE))
+# this is our fitting with three knots,
+```
+
+```{r 3 knots, cp}
+# pch is the plotting character 19, which is a solid dot
+# to plot a gam use gam.check
+ca1.cp3.gam<-gam(Ex~s(TA, k=3, bs='cp'), data=ca1)
+gam.check(ca1.cp3.gam, pch=19)
+```
+**Result** : The residuals are still not normally distributed (see histogram). Also, there is still a pattern in the response vs. fitted values.
+
+```{r 4 knots, cp}
+ca1.cp4.gam<-gam(Ex~s(TA, k=4, bs='cp'), data=ca1)
+gam.check(ca1.cp4.gam, pch=19)
+```
+```{r 5 knots, cp}
+ca1.cp5.gam<-gam(Ex~s(TA, k=5, bs='cp'), data=ca1)
+gam.check(ca1.cp5.gam, pch=19)
+```
+
+Compare model with **AIC**:
+
+```{r AIC to compare GAM models}
+AIC(ca1.cp3.gam, ca1.cp4.gam, ca1.cp5.gam)
+```
+**Result** : models are not satisfying due to the non normality in the histogram.
+
+
+
+
+
+## para dataset
+
+To have a look at the nutrient levels over time during my 3 days experiment, we need to upload the para csv file, because I took samples for nitrate, nitrite and phosphate after 24, 48 and 72 hours during my experiment.  
+
+```{r load monitored parameteres and nutrient dataset on a time scale}
+para<-read.csv('C:/Users/admin/Desktop/Paper CA/Gex/para.csv', strip.white=T)
+head(para)
+```
+
+```{r}
+summary(para)
+```
+
+```{r}
+ggplot(para, aes(y=NO3, x=Time)) +
+  geom_smooth(aes(y=NO3, x=Time, colour=Treat)) +
+  geom_point(aes(y=NO3, x=Time, colour=Treat)) +
+  ylab("Nitrate")
+
+ggplot(para, aes(y=PO43, x=Time)) +
+  geom_smooth(aes(y=PO43, x=Time, colour=Treat)) +
+  geom_point(aes(y=PO43, x=Time, colour=Treat)) +
+  ylab("Phosphate")
+```
+
+I can see consumption of PO4 3- (and some of NO3) during my experiment across all the treatments.
+
+```{r}
+ggplot(para, aes(y=TA, x=Time)) +
+  geom_line(aes(y=TA, x=Time, group=Treat, colour=Treat)) +
+  geom_point(aes(y=TA, x=Time, colour=Treat)) +
+  ylab("Total Alkalinity")
+```
+
+How do I give sense to the lines? A smooth wouldn't work...
